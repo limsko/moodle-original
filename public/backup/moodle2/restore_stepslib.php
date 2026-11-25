@@ -5009,6 +5009,10 @@ class restore_userscompletion_structure_step extends restore_structure_step {
 
         $data->coursemoduleid = $this->task->get_moduleid();
         $data->userid = $this->get_mappingid('user', $data->userid);
+        if (empty($data->userid)) {
+            // The user has not been restored (e.g. a backup without users), so there is nobody to restore it for.
+            return;
+        }
 
         // Find the existing record
         $existing = $DB->get_record('course_modules_completion', array(
@@ -5048,6 +5052,10 @@ class restore_userscompletion_structure_step extends restore_structure_step {
         $data = (object)$data;
         $data->coursemoduleid = $this->task->get_moduleid();
         $data->userid = $this->get_mappingid('user', $data->userid);
+        if (empty($data->userid)) {
+            // The user has not been restored. Inserting userid 0 would break the unique (userid, coursemoduleid) index.
+            return;
+        }
 
         $DB->insert_record('course_modules_viewed', $data);
     }
