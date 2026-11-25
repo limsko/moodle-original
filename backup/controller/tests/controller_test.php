@@ -121,6 +121,41 @@ final class controller_test extends \advanced_testcase {
         $this->assertTrue($newbc instanceof backup_controller); // This means checksum and load worked ok
     }
 
+    /**
+     * Data provider for {@see test_backup_admin_defaults_userscompletion}.
+     *
+     * @return array
+     */
+    public static function backup_admin_defaults_userscompletion_provider(): array {
+        return [
+            'Users and user completion' => [1, 1, true],
+            'Users without user completion' => [1, 0, false],
+            'No users, user completion default enabled' => [0, 1, false],
+            'No users, user completion default disabled' => [0, 0, false],
+        ];
+    }
+
+    /**
+     * The admin default for user completion must not override the setting when users are not included.
+     *
+     * @param int $users Value of backup_general_users.
+     * @param int $userscompletion Value of backup_general_userscompletion.
+     * @param bool $expected Expected value of the userscompletion backup setting.
+     * @dataProvider backup_admin_defaults_userscompletion_provider
+     * @covers \backup_controller_dbops::apply_config_defaults
+     */
+    public function test_backup_admin_defaults_userscompletion(int $users, int $userscompletion, bool $expected): void {
+        set_config('backup_general_users', $users, 'backup');
+        set_config('backup_general_userscompletion', $userscompletion, 'backup');
+
+        $bc = new backup_controller(backup::TYPE_1COURSE, $this->courseid, backup::FORMAT_MOODLE,
+            backup::INTERACTIVE_YES, backup::MODE_GENERAL, $this->userid);
+        $plan = $bc->get_plan();
+        $this->assertEquals((bool) $users, (bool) $plan->get_setting('users')->get_value());
+        $this->assertEquals($expected, (bool) $plan->get_setting('userscompletion')->get_value());
+        $bc->destroy();
+    }
+
     public function test_backup_controller_include_files(): void {
         // A MODE_GENERAL controller - this should include files
         $bc = new mock_backup_controller(backup::TYPE_1ACTIVITY, $this->moduleid, backup::FORMAT_MOODLE,
