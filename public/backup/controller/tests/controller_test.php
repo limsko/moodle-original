@@ -44,6 +44,7 @@ require_once($CFG->dirroot . '/backup/util/includes/restore_includes.php');
  */
 #[\PHPUnit\Framework\Attributes\CoversMethod(\restore_controller::class, 'get_copy')]
 #[\PHPUnit\Framework\Attributes\CoversMethod(\restore_controller::class, '__construct')]
+#[\PHPUnit\Framework\Attributes\CoversMethod(\backup_controller_dbops::class, 'apply_config_defaults')]
 final class controller_test extends \advanced_testcase {
 
     protected $moduleid;  // course_modules id used for testing
@@ -117,6 +118,40 @@ final class controller_test extends \advanced_testcase {
         $recid = $bc->save_controller();
         $newbc = mock_backup_controller::load_controller($bc->get_backupid());
         $this->assertTrue($newbc instanceof backup_controller); // This means checksum and load worked ok
+    }
+
+    /**
+     * Data provider for {@see test_backup_admin_defaults_userscompletion}.
+     *
+     * @return array
+     */
+    public static function backup_admin_defaults_userscompletion_provider(): array {
+        return [
+            'Users and user completion' => [1, 1, true],
+            'Users without user completion' => [1, 0, false],
+            'No users, user completion default enabled' => [0, 1, false],
+            'No users, user completion default disabled' => [0, 0, false],
+        ];
+    }
+
+    /**
+     * The admin default for user completion must not override the setting when users are not included.
+     *
+     * @param int $users Value of backup_general_users.
+     * @param int $userscompletion Value of backup_general_userscompletion.
+     * @param bool $expected Expected value of the userscompletion backup setting.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('backup_admin_defaults_userscompletion_provider')]
+    public function test_backup_admin_defaults_userscompletion(int $users, int $userscompletion, bool $expected): void {
+        set_config('backup_general_users', $users, 'backup');
+        set_config('backup_general_userscompletion', $userscompletion, 'backup');
+
+        $bc = new backup_controller(backup::TYPE_1COURSE, $this->courseid, backup::FORMAT_MOODLE,
+            backup::INTERACTIVE_YES, backup::MODE_GENERAL, $this->userid);
+        $plan = $bc->get_plan();
+        $this->assertEquals((bool) $users, (bool) $plan->get_setting('users')->get_value());
+        $this->assertEquals($expected, (bool) $plan->get_setting('userscompletion')->get_value());
+        $bc->destroy();
     }
 
     public function test_backup_controller_include_files(): void {
