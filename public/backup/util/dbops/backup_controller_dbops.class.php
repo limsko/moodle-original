@@ -732,7 +732,11 @@ abstract class backup_controller_dbops extends backup_dbops {
                 // We can only update the setting if it isn't already locked by config or permission.
                 if ($setting->get_status() !== base_setting::LOCKED_BY_CONFIG
                         && $setting->get_status() !== base_setting::LOCKED_BY_PERMISSION) {
-                    $setting->set_value($value);
+                    // A setting locked by hierarchy takes its value from the setting it depends on (e.g. user
+                    // completion when users are not included), so the admin default must not override it.
+                    if ($setting->get_status() !== base_setting::LOCKED_BY_HIERARCHY) {
+                        $setting->set_value($value);
+                    }
                     if ($locked) {
                         $setting->set_status(base_setting::LOCKED_BY_CONFIG);
                     }

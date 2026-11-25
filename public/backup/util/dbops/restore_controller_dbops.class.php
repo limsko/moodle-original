@@ -298,7 +298,11 @@ abstract class restore_controller_dbops extends restore_dbops {
                 if ($setting->get_status() != base_setting::LOCKED_BY_CONFIG
                         && $setting->get_status() != base_setting::LOCKED_BY_PERMISSION
                         && $setting->get_ui()->is_changeable()) {
-                    $setting->set_value($value);
+                    // A setting locked by hierarchy takes its value from the setting it depends on (e.g. user
+                    // completion when users are not restored), so the admin default must not override it.
+                    if ($setting->get_status() != base_setting::LOCKED_BY_HIERARCHY) {
+                        $setting->set_value($value);
+                    }
                     if ($uselocks && $locked) {
                         $setting->set_status(base_setting::LOCKED_BY_CONFIG);
                     }

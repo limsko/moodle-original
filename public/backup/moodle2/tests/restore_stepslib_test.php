@@ -31,6 +31,8 @@ use restore_controller;
 #[\PHPUnit\Framework\Attributes\CoversMethod(\restore_section_structure_step::class, 'process_section')]
 #[\PHPUnit\Framework\Attributes\CoversMethod(\restore_root_task::class, 'define_settings')]
 #[\PHPUnit\Framework\Attributes\CoversMethod(\restore_load_included_files::class, 'process_file')]
+#[\PHPUnit\Framework\Attributes\CoversClass(\restore_userscompletion_structure_step::class)]
+#[\PHPUnit\Framework\Attributes\CoversMethod(\restore_controller_dbops::class, 'apply_config_defaults')]
 final class restore_stepslib_test extends \advanced_testcase {
     /**
      * Setup to include all libraries.
@@ -40,6 +42,7 @@ final class restore_stepslib_test extends \advanced_testcase {
         require_once($CFG->dirroot . '/backup/util/includes/backup_includes.php');
         require_once($CFG->dirroot . '/backup/util/includes/restore_includes.php');
         require_once($CFG->dirroot . '/backup/moodle2/restore_stepslib.php');
+        require_once($CFG->libdir . '/completionlib.php');
         parent::setUpBeforeClass();
     }
 
@@ -249,5 +252,134 @@ final class restore_stepslib_test extends \advanced_testcase {
                 ->with($this->stringContains('Skipping file with invalid contenthash during restore'), backup::LOG_WARNING);
             $step->process_file(['contenthash' => $hash]);
         }
+    }
+
+    /**
+     * Creates a course with an activity that has been viewed by two students.
+     *
+     * @return array The course and the course module of the activity.
+     */
+    protected function create_course_with_viewed_activity(): array {
+        global $DB;
+
+        $generator = $this->getDataGenerator();
+        $course = $generator->create_course(['enablecompletion' => 1]);
+        $assign = $generator->create_module('assign', [
+            'course' => $course->id,
+            'completion' => COMPLETION_TRACKING_AUTOMATIC,
+            'completionview' => 1,
+        ]);
+        $cm = get_coursemodule_from_instance('assign', $assign->id);
+
+        $completion = new \completion_info($course);
+        for ($i = 0; $i < 2; $i++) {
+            $student = $generator->create_and_enrol($course, 'student');
+            $completion->set_module_viewed($cm, $student->id);
+        }
+        $this->assertEquals(2, $DB->count_records('course_modules_viewed', ['coursemoduleid' => $cm->id]));
+
+        return [$course, $cm];
+    }
+
+    /**
+     * Makes a backup of the course with the given settings and extracts it for restore.
+     *
+     * @param \stdClass $course The course object.
+     * @param array $settings Backup settings to set, in order (name => value).
+     * @return string The backup temp directory to restore from.
+     */
+    protected function backup_course_with_settings(\stdClass $course, array $settings): string {
+        global $CFG, $USER;
+
+        // Turn off file logging, otherwise it can't delete the file (Windows).
+        $CFG->backup_file_logger_level = backup::LOG_NONE;
+
+        $bc = new \backup_controller(
+            backup::TYPE_1COURSE,
+            $course->id,
+            backup::FORMAT_MOODLE,
+            backup::INTERACTIVE_NO,
+            backup::MODE_GENERAL,
+            $USER->id
+        );
+        foreach ($settings as $name => $value) {
+            $bc->get_plan()->get_setting($name)->set_value($value);
+        }
+        $bc->execute_plan();
+        $file = $bc->get_results()['backup_destination'];
+
+        $backupid = restore_controller::get_tempdir_name($course->id, $USER->id);
+        $file->extract_to_pathname(get_file_packer('application/vnd.moodle.backup'), make_backup_temp_directory($backupid));
+        $bc->destroy();
+
+        return $backupid;
+    }
+
+    /**
+     * Asserts that no completion data for userid 0 exists in the course.
+     *
+     * @param int $courseid The course id.
+     */
+    protected function assert_no_completion_for_userid_zero(int $courseid): void {
+        global $DB;
+
+        $cmids = $DB->get_fieldset('course_modules', 'id', ['course' => $courseid]);
+        [$insql, $params] = $DB->get_in_or_equal($cmids);
+        $this->assertEquals(0, $DB->count_records_select('course_modules_completion',
+            "userid = 0 AND coursemoduleid $insql", $params));
+        $this->assertEquals(0, $DB->count_records_select('course_modules_viewed',
+            "userid = 0 AND coursemoduleid $insql", $params));
+    }
+
+    /**
+     * Restoring a backup without users, but with user completion data, must skip that data.
+     *
+     * Such backups can be created when users are excluded and user completion is still included.
+     */
+    public function test_restore_userscompletion_without_users(): void {
+        global $USER;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        [$course] = $this->create_course_with_viewed_activity();
+        $backupid = $this->backup_course_with_settings($course, ['users' => false, 'userscompletion' => true]);
+
+        $newcourseid = \restore_dbops::create_new_course('Restored', 'restored', $course->category);
+        $rc = new restore_controller($backupid, $newcourseid, backup::INTERACTIVE_NO, backup::MODE_GENERAL,
+            $USER->id, backup::TARGET_NEW_COURSE);
+        $this->assertTrue((bool) $rc->get_plan()->get_setting('userscompletion')->get_value());
+        $this->assertTrue($rc->execute_precheck());
+        $rc->execute_plan();
+        $rc->destroy();
+
+        $this->assert_no_completion_for_userid_zero($newcourseid);
+    }
+
+    /**
+     * The restore admin default for user completion must not override the setting when users are not restored.
+     */
+    public function test_restore_admin_defaults_userscompletion_locked_by_users(): void {
+        global $USER;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        [$course] = $this->create_course_with_viewed_activity();
+        $backupid = $this->backup_course_with_settings($course, ['users' => true, 'userscompletion' => true]);
+
+        set_config('restore_general_users', 0, 'restore');
+        set_config('restore_general_userscompletion', 1, 'restore');
+
+        $newcourseid = \restore_dbops::create_new_course('Restored', 'restored', $course->category);
+        $rc = new restore_controller($backupid, $newcourseid, backup::INTERACTIVE_NO, backup::MODE_GENERAL,
+            $USER->id, backup::TARGET_NEW_COURSE);
+        $this->assertFalse((bool) $rc->get_plan()->get_setting('users')->get_value());
+        $this->assertFalse((bool) $rc->get_plan()->get_setting('userscompletion')->get_value());
+        $this->assertTrue($rc->execute_precheck());
+        $rc->execute_plan();
+        $rc->destroy();
+
+        $this->assert_no_completion_for_userid_zero($newcourseid);
     }
 }
